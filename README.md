@@ -39,7 +39,7 @@ Minecraft Java Edition サーバーの稼働状況をタスクトレイで監視
 
 ### ポータブル版 (ZIP)
 
-1. [Releases](https://github.com/kihi78/MineTray/releases) から `MineTray_v1.0.0.zip` をダウンロード
+1. [Releases](https://github.com/kihi78/MineTray/releases) から `MineTray_vx.x.x.zip` をダウンロード
 2. 任意のフォルダに展開
 3. `MineTray.exe` を実行
 

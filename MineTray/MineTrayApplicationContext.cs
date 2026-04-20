@@ -105,9 +105,11 @@ namespace MineTray
             try
             {
                 const string appName = "MineTray";
-                string exePath = Application.ExecutablePath;
                 
-                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                string? exePath = Environment.ProcessPath;
+                if (string.IsNullOrEmpty(exePath)) return;
+                
+                using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(
                     @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true);
                 
                 if (key == null) return;
