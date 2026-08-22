@@ -2,7 +2,7 @@
 ; Run with Inno Setup Compiler: iscc installer.iss
 
 #define MyAppName "MineTray"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.0.2"
 #define MyAppPublisher "MineTray"
 #define MyAppURL "https://github.com/kihi78/MineTray"
 #define MyAppExeName "MineTray.exe"

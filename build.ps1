@@ -59,7 +59,7 @@ if ($CreateZip) {
     
     if (-not (Test-Path $DistDir)) { New-Item $DistDir -ItemType Directory | Out-Null }
     
-    $version = "1.0.1"
+    $version = "1.0.2"
     $zipPath = Join-Path $DistDir "MineTray_v$version.zip"
     
     Compress-Archive -Path "$PublishDir\*" -DestinationPath $zipPath -Force
