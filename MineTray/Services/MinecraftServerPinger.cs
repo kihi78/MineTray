@@ -13,132 +13,134 @@ namespace MineTray.Services
     {
         private const int TimeOutMs = 15000;
 
+        // DNSルックアップはHttpClientと同様に使い回すのが推奨パターン (毎回newすると非効率)
+        private readonly LookupClient _lookupClient = new();
+
         /// <summary>
         /// 指定されたアドレスにPingを送信し、サーバーステータスを取得します。
         /// </summary>
         public async Task<MinecraftServerStatus?> PingAsync(string address)
         {
-            return await Task.Run(async () =>
+            // 入力をクリーンアップ
+            address = address.Trim();
+
+            string connectionHost = address;
+            int connectionPort = 25565;
+
+            try
             {
-                // 入力をクリーンアップ
-                address = address.Trim();
-                
-                string connectionHost = address;
-                int connectionPort = 25565;
-                
-                try
+                // 1. ポートの解析
+                if (address.Contains(":"))
                 {
-                    // 1. ポートの解析
-                    if (address.Contains(":"))
+                    var parts = address.Split(':');
+                    if (parts.Length == 2 && int.TryParse(parts[1], out int p))
                     {
-                        var parts = address.Split(':');
-                        if (parts.Length == 2 && int.TryParse(parts[1], out int p))
-                        {
-                            connectionHost = parts[0];
-                            connectionPort = p;
-                        }
+                        connectionHost = parts[0];
+                        connectionPort = p;
                     }
+                }
 
-                    // 2. SRVレコードの検索 (ポート未指定の場合)
-                    string originalHost = connectionHost;
-                    
-                    if (!address.Contains(":")) 
-                    {
-                        try 
-                        {
-                            var lookup = new LookupClient();
-                            var result = await lookup.QueryAsync($"_minecraft._tcp.{originalHost}", QueryType.SRV);
-                            if (result.Answers.SrvRecords().Any())
-                            {
-                                var record = result.Answers.SrvRecords().First();
-                                string target = record.Target.Value.TrimEnd('.');
-                                connectionHost = target;
-                                connectionPort = record.Port;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            // SRVルックアップはオプション機能。失敗してもエラーにしない
-                        }
-                    }
+                // 2. SRVレコードの検索 (ポート未指定の場合)
+                string originalHost = connectionHost;
 
-                    using var client = new TcpClient();
-                    client.ReceiveBufferSize = 65535;
-                    client.SendBufferSize = 65535;
-                    client.ReceiveTimeout = TimeOutMs;
-                    client.SendTimeout = TimeOutMs;
-
-                    using var cts = new CancellationTokenSource(TimeOutMs);
-
+                if (!address.Contains(":"))
+                {
                     try
                     {
-                        await client.ConnectAsync(connectionHost, connectionPort, cts.Token);
+                        var result = await _lookupClient.QueryAsync($"_minecraft._tcp.{originalHost}", QueryType.SRV);
+                        if (result.Answers.SrvRecords().Any())
+                        {
+                            var record = result.Answers.SrvRecords().First();
+                            string target = record.Target.Value.TrimEnd('.');
+                            connectionHost = target;
+                            connectionPort = record.Port;
+                        }
                     }
                     catch (Exception ex)
                     {
-                         return null;
+                        // SRVルックアップはオプション機能。失敗してもエラーにしない
+                        System.Diagnostics.Debug.WriteLine($"[MinecraftServerPinger] SRVルックアップ失敗 ({originalHost}): {ex.Message}");
                     }
-
-                    using var networkStream = client.GetStream();
-
-                    // --- バッチパケットの準備 (ハンドシェイク + リクエスト) ---
-                    var batchBuffer = new List<byte>();
-
-                    // 1. ハンドシェイクパケット
-                    var handshakeInner = new List<byte>();
-                    WriteVarInt(handshakeInner, 0x00);      // パケットID
-                    WriteVarInt(handshakeInner, 763);       // プロトコルバージョン
-                    WriteString(handshakeInner, originalHost); // 元のホスト名を送信
-                    WriteUShort(handshakeInner, (ushort)connectionPort);
-                    WriteVarInt(handshakeInner, 0x01);      // 次のステート (Status)
-                    
-                    WriteVarInt(batchBuffer, handshakeInner.Count);
-                    batchBuffer.AddRange(handshakeInner);
-
-                    // 2. ステータスリクエストパケット
-                    var requestInner = new List<byte>();
-                    WriteVarInt(requestInner, 0x00);        // パケットID (Status Request)
-                    
-                    WriteVarInt(batchBuffer, requestInner.Count);
-                    batchBuffer.AddRange(requestInner);
-
-                    // パケット送信
-                    await networkStream.WriteAsync(batchBuffer.ToArray(), cts.Token);
-                    await networkStream.FlushAsync(cts.Token);
-
-                    // --- レスポンス読み取り ---
-                    
-                    // 1. パケット長を読み取り
-                    int packetLength = await ReadVarIntAsync(networkStream, cts.Token);
-
-                    if (packetLength <= 0) return null;
-
-                    // 2. パケット本体を読み取り
-                    byte[] packetBody = new byte[packetLength];
-                    int totalRead = 0;
-                    while (totalRead < packetLength)
-                    {
-                        int read = await networkStream.ReadAsync(packetBody, totalRead, packetLength - totalRead, cts.Token);
-                        if (read == 0) throw new EndOfStreamException($"パケット読み取り中に接続が切断されました。期待: {packetLength}, 取得: {totalRead}");
-                        totalRead += read;
-                    }
-
-                    // 3. パケット本体を解析
-                    using var memStream = new MemoryStream(packetBody);
-                    
-                    int packetId = ReadVarInt(memStream);
-                    if (packetId != 0x00) return null;
-
-                    string json = ReadString(memStream);
-
-                    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                    return JsonSerializer.Deserialize<MinecraftServerStatus>(json, options);
                 }
-                catch
+
+                using var client = new TcpClient();
+                client.ReceiveBufferSize = 65535;
+                client.SendBufferSize = 65535;
+
+                // 注: ReceiveTimeout/SendTimeoutは同期I/Oにのみ適用され、
+                // 以下で使うReadAsync/WriteAsyncには効かない。タイムアウトはcts(下記)で一元管理する。
+                using var cts = new CancellationTokenSource(TimeOutMs);
+
+                try
                 {
+                    await client.ConnectAsync(connectionHost, connectionPort, cts.Token);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[MinecraftServerPinger] 接続失敗 ({connectionHost}:{connectionPort}): {ex.Message}");
                     return null;
                 }
-            });
+
+                using var networkStream = client.GetStream();
+
+                // --- バッチパケットの準備 (ハンドシェイク + リクエスト) ---
+                var batchBuffer = new List<byte>();
+
+                // 1. ハンドシェイクパケット
+                var handshakeInner = new List<byte>();
+                WriteVarInt(handshakeInner, 0x00);      // パケットID
+                WriteVarInt(handshakeInner, 763);       // プロトコルバージョン
+                WriteString(handshakeInner, originalHost); // 元のホスト名を送信
+                WriteUShort(handshakeInner, (ushort)connectionPort);
+                WriteVarInt(handshakeInner, 0x01);      // 次のステート (Status)
+
+                WriteVarInt(batchBuffer, handshakeInner.Count);
+                batchBuffer.AddRange(handshakeInner);
+
+                // 2. ステータスリクエストパケット
+                var requestInner = new List<byte>();
+                WriteVarInt(requestInner, 0x00);        // パケットID (Status Request)
+
+                WriteVarInt(batchBuffer, requestInner.Count);
+                batchBuffer.AddRange(requestInner);
+
+                // パケット送信
+                await networkStream.WriteAsync(batchBuffer.ToArray(), cts.Token);
+                await networkStream.FlushAsync(cts.Token);
+
+                // --- レスポンス読み取り ---
+
+                // 1. パケット長を読み取り
+                int packetLength = await ReadVarIntAsync(networkStream, cts.Token);
+
+                if (packetLength <= 0) return null;
+
+                // 2. パケット本体を読み取り
+                byte[] packetBody = new byte[packetLength];
+                int totalRead = 0;
+                while (totalRead < packetLength)
+                {
+                    int read = await networkStream.ReadAsync(packetBody, totalRead, packetLength - totalRead, cts.Token);
+                    if (read == 0) throw new EndOfStreamException($"パケット読み取り中に接続が切断されました。期待: {packetLength}, 取得: {totalRead}");
+                    totalRead += read;
+                }
+
+                // 3. パケット本体を解析
+                using var memStream = new MemoryStream(packetBody);
+
+                int packetId = ReadVarInt(memStream);
+                if (packetId != 0x00) return null;
+
+                string json = ReadString(memStream);
+
+                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                return JsonSerializer.Deserialize<MinecraftServerStatus>(json, options);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[MinecraftServerPinger] Ping失敗 ({address}): {ex.Message}");
+                return null;
+            }
         }
 
         #region VarInt / パケット操作

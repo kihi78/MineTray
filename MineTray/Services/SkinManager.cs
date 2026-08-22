@@ -5,7 +5,7 @@ namespace MineTray.Services
     /// <summary>
     /// プレイヤースキンのキャッシュ管理とダウンロードを行います。
     /// </summary>
-    public class SkinManager
+    public class SkinManager : IDisposable
     {
         private const string CacheFolder = "cache";
         private const string BaseUrl = "https://minotar.net/avatar/{0}/64";
@@ -75,6 +75,11 @@ namespace MineTray.Services
                 }
             }
             return null;
+        }
+
+        public void Dispose()
+        {
+            _httpClient.Dispose();
         }
     }
 }

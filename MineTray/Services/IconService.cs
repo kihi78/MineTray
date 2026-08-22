@@ -34,13 +34,25 @@ namespace MineTray.Services
 
         private Icon? LoadIconFromAsset(string filename)
         {
-            try 
+            try
             {
                 string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", filename);
                 if (File.Exists(path))
                 {
                     using var bmp = new Bitmap(path);
-                    return Icon.FromHandle(bmp.GetHicon());
+                    IntPtr hIcon = bmp.GetHicon();
+                    try
+                    {
+                        // Icon.FromHandleはハンドルの所有権を持たないため、
+                        // Dispose()してもネイティブHICONは解放されない。
+                        // Clone()で独立したコピーを作成し、元のハンドルは明示的に破棄する。
+                        using var tempIcon = Icon.FromHandle(hIcon);
+                        return (Icon)tempIcon.Clone();
+                    }
+                    finally
+                    {
+                        DestroyIcon(hIcon);
+                    }
                 }
             }
             catch (Exception ex)
@@ -94,24 +106,6 @@ namespace MineTray.Services
                 System.Diagnostics.Debug.WriteLine($"[IconService.CreateFallbackIcon] エラー: {ex.Message}"); 
             }
             return null;
-        }
-
-        /// <summary>
-        /// 適切なステータスアイコンを取得します。
-        /// </summary>
-        public Icon GetStatusIcon(bool isOffline, bool hasPlayers, int playerCount)
-        {
-            if (isOffline)
-            {
-                return _iconOffline ?? CreateFallbackIcon(Color.Gray) ?? SystemIcons.Warning;
-            }
-            
-            if (playerCount == 0)
-            {
-                return _iconOnline ?? _iconMain ?? SystemIcons.Application;
-            }
-            
-            return _iconMain ?? SystemIcons.Application;
         }
 
         /// <summary>
